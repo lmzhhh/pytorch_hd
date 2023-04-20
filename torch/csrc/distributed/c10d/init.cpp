@@ -28,6 +28,7 @@
 #include <c10d/comm.hpp>
 #include <c10d/frontend.hpp>
 #include <c10d/reducer.hpp>
+#include <c10d/reducer_elastic.hpp>
 #include <torch/csrc/Exceptions.h>
 #include <torch/csrc/distributed/c10d/python_comm_hook.h>
 #include <torch/csrc/jit/python/pybind_utils.h>
@@ -140,12 +141,24 @@ void _register_comm_hook(
   reducer.register_comm_hook(std::make_unique<::c10d::PythonCommHook>(
       std::move(state), std::move(comm_hook)));
 }
+void _register_comm_hook_4Elastic(
+    ::c10d::ElasticReducer& reducer,
+    py::object state,
+    py::object comm_hook) {
+  reducer.register_comm_hook(std::make_unique<::c10d::PythonCommHook>(
+      std::move(state), std::move(comm_hook)));
+}
 
 // Called from DDP's Python API to create a c10d C++ comm hook.
 // The input is an enum hook type. It later calls register_builtin_comm_hook
 // function of the reducer input to set the hook type.
 void _register_builtin_comm_hook(
     ::c10d::Reducer& reducer,
+    ::c10d::BuiltinCommHookType comm_hook_type) {
+  reducer.register_builtin_comm_hook(comm_hook_type);
+}
+void _register_builtin_comm_hook_4Elastic(
+    ::c10d::ElasticReducer& reducer,
     ::c10d::BuiltinCommHookType comm_hook_type) {
   reducer.register_builtin_comm_hook(comm_hook_type);
 }
@@ -168,6 +181,7 @@ PyObject* c10d_init(PyObject* _unused, PyObject* noargs) {
 
   auto module = py::handle(m).cast<py::module>();
 
+  // TODO(Mingzhen) ElasticReducer is not supported here.
   module
       .def(
           "_register_comm_hook",
@@ -177,8 +191,20 @@ PyObject* c10d_init(PyObject* _unused, PyObject* noargs) {
           py::arg("comm_hook"),
           py::call_guard<py::gil_scoped_release>())
       .def(
+          "_register_comm_hook_4Elastic",
+          &_register_comm_hook_4Elastic,
+          py::arg("reducer"),
+          py::arg("state"),
+          py::arg("comm_hook"),
+          py::call_guard<py::gil_scoped_release>())
+      .def(
           "_register_builtin_comm_hook",
           &_register_builtin_comm_hook,
+          py::arg("reducer"),
+          py::arg("comm_hook_type"))
+      .def(
+          "_register_builtin_comm_hook_4Elastic",
+          &_register_builtin_comm_hook_4Elastic,
           py::arg("reducer"),
           py::arg("comm_hook_type"))
       .def(
@@ -301,6 +327,98 @@ An enum-like class for built-in communication hooks: ``ALLREDUCE`` and ``FP16_CO
       .def(
           "_get_local_used_maps",
           &::c10d::Reducer::get_local_used_maps_on_device);
+
+  shared_ptr_class_<::c10d::ElasticReducer>(module, "ElasticReducer")
+      .def(
+          py::init<
+              std::vector<std::vector<torch::autograd::Variable>>,
+              std::vector<std::vector<size_t>>,
+              c10::intrusive_ptr<::c10d::ProcessGroup>,
+              c10::intrusive_ptr<::c10d::ProcessGroup>,
+              std::vector<std::vector<bool>>,
+              int64_t,
+              bool,
+              bool,
+              bool,
+              int64_t,
+              int64_t,
+              int64_t,
+              at::Tensor,
+              std::vector<at::Tensor> >(),
+          py::arg("replicas"),
+          py::arg("bucket_indices"),
+          py::arg("process_group"),
+          py::arg("process_group_comp"),
+          py::arg("expect_sparse_gradients") = std::vector<std::vector<bool>>(),
+          py::arg("bucket_bytes_cap") = ::c10d::kDefaultBucketBytesCap,
+          py::arg("find_unused_parameters") = false,
+          py::arg("gradient_as_bucket_view") = false,
+          py::arg("is_computation_process"),
+          py::arg("logic_gpus_num"),
+          py::arg("logic_rank"),
+          py::arg("cheif_rank"),
+          py::arg("shm_array"),
+          py::arg("shm_grads"),
+          py::call_guard<py::gil_scoped_release>())
+      .def(
+          "initialize_buckets",
+          &::c10d::ElasticReducer::initialize_buckets,
+          py::call_guard<py::gil_scoped_release>())
+      .def(
+          "prepare_for_backward",
+          &::c10d::ElasticReducer::prepare_for_backward,
+          py::call_guard<py::gil_scoped_release>())
+      .def(
+          "prepare_for_backward",
+          [](::c10d::ElasticReducer& reducer, const torch::autograd::Variable& output)
+              -> void { reducer.prepare_for_backward({output}); },
+          py::call_guard<py::gil_scoped_release>())
+      .def("get_backward_stats", &::c10d::ElasticReducer::get_backward_stats)
+      .def(
+          "_rebuild_buckets",
+          &::c10d::ElasticReducer::rebuild_buckets,
+          py::call_guard<py::gil_scoped_release>())
+      .def(
+          "get_bucket_tensors",
+          &::c10d::ElasticReducer::get_bucket_tensors,
+          py::call_guard<py::gil_scoped_release>())
+      .def(
+          "_push_all_rebuilt_params",
+          &::c10d::ElasticReducer::push_rebuilt_params_for_all_indices,
+          py::call_guard<py::gil_scoped_release>())
+      .def(
+          "_set_forward_pass_work_handle",
+          &::c10d::ElasticReducer::set_forward_pass_work_handle,
+          py::call_guard<py::gil_scoped_release>())
+      .def(
+          "_get_local_used_maps",
+          &::c10d::ElasticReducer::get_local_used_maps_on_device)
+      .def(
+          "_count_micro_batch",
+          &::c10d::ElasticReducer::count_micro_batch,
+          py::call_guard<py::gil_scoped_release>())
+      .def(
+          "commProcess_listening",
+          &::c10d::ElasticReducer::commProcess_listening,
+          py::call_guard<py::gil_scoped_release>())
+      .def(
+          "_get_shm_array",
+          &::c10d::ElasticReducer::get_shm_array )
+      .def(
+          "_print_shm_array",
+          &::c10d::ElasticReducer::print_shm_array,
+          py::call_guard<py::gil_scoped_release>())
+      .def(
+          "get_rebuilt_param_indices",
+          &::c10d::ElasticReducer::get_rebuilt_param_indices)
+      .def(
+          "force_load_rebuilt_param_indices",
+          &::c10d::ElasticReducer::force_load_rebuilt_param_indices,
+          py::call_guard<py::gil_scoped_release>())
+      .def(
+          "force_rebuild_buckets",
+          &::c10d::ElasticReducer::force_rebuild_buckets,
+          py::call_guard<py::gil_scoped_release>());
 
   py::enum_<::c10d::ReduceOp>(module, "ReduceOp", R"(
 An enum-like class for available reduction operations: ``SUM``, ``PRODUCT``,

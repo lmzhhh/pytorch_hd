@@ -182,6 +182,16 @@ class TORCH_API Context {
   // https://docs.nvidia.com/cuda/cublas/index.html#cublasApi_reproducibility
   void alertCuBLASConfigNotDeterministic();
 
+  bool heterogeneousDeterministicAlgorithms() const;
+  void setHeterogeneousDeterministicAlgorithms(bool);
+
+  bool deterministicDataloaderWorkers() const;
+  void setDeterministicDataloaderWorkers(bool);
+
+  int gemmAlgo() const;
+  void setGemmAlgo(int);
+
+
   bool allowTF32CuDNN() const;
   void setAllowTF32CuDNN(bool);
   bool allowTF32CuBLAS() const;
@@ -216,6 +226,12 @@ class TORCH_API Context {
   bool enabled_cudnn = true;
   bool deterministic_cudnn = false;
   bool _deterministic_algorithms = false;
+  bool _heterogeneous_deterministic_algorithms = false;
+  bool _deterministic_dataloader_workers = false;
+  
+  // hack
+  int _gemm_algo = 2;
+
   bool benchmark_cudnn = false;
   bool allow_tf32_cudnn = true;
   bool allow_tf32_cublas = true;

@@ -293,6 +293,88 @@ class DataLoader(Generic[T_co]):
 
         self.check_worker_number_rationality()
 
+        self._are_deterministic_dataloader_workers_enabled = False
+        if torch.are_deterministic_dataloader_workers_enabled():
+            if self.sampler.__class__.__name__ is "EasyScaleSampler" \
+                or self.sampler.__class__.__name__ is "EasyScaleSampler_v2":
+                self._sampler_kind = "EasyScale"
+                self._num_total_replicas = self.sampler.num_total_replicas
+                self._num_required_replicas = self.sampler.num_required_replicas
+                self._start_rank = self.sampler.start_rank
+                # should be updated each time when loading the ckpt
+                self._start_batch_idx = self.sampler.start_idx
+                self._len_deterministic_sampler = self.sampler.get_total_len()
+                self._are_deterministic_dataloader_workers_enabled = True
+                self.init_workers_rng_state()
+
+                assert self.persistent_workers == False, "persistent_workers is not supported when torch.use_deterministic_dataloader_workers(True)"
+
+        self._current_epoch = -1
+        self._current_mini_batch = -1
+
+    def record_current_state(self, epoch, batch, start_batch):
+        self._current_epoch = epoch
+        self._current_mini_batch = batch
+        self._start_batch_idx = start_batch
+        if torch.are_deterministic_dataloader_workers_enabled() and self.num_workers > 0:
+            if self._iterator is not None:
+                self._iterator._current_epoch = self._current_epoch
+                self._iterator._current_mini_batch = self._current_mini_batch
+                self._iterator._start_batch_idx = self._start_batch_idx
+                self._iterator._inspect_buffer_unmatched_rng_state()
+
+    def notify_iter_finished(self):
+        if not self.persistent_workers and self.num_workers > 0:
+            if self._are_deterministic_dataloader_workers_enabled:
+                assert bool(self._iterator._buffer_unmatched_index.keys()) == False, "## DEBUG: {}".format(self._iterator._buffer_unmatched_index.keys())
+                assert bool(self._iterator._buffer_unmatched_rng_state.keys()) == False, "## DEBUG: {}".format(self._iterator._buffer_unmatched_rng_state.keys())
+                self._iterator = None
+        
+        if self.num_workers > 0:
+            if self._are_deterministic_dataloader_workers_enabled:
+                for idx_0 in range(self._num_total_replicas):
+                    for idx_1 in range(self.num_workers):
+                        self.workers_rng_state_dict['set_cnt'][idx_0][idx_1] = 0
+
+    def init_workers_rng_state(self):
+        assert self._are_deterministic_dataloader_workers_enabled
+        torch_rng_state = None
+        torch_cuda_rng_state = None
+        np_rng_state = None
+        rd_rng_state = None
+
+        self.workers_rng_state_dict = dict()
+        self.workers_rng_state_dict['torch'] = [[torch_rng_state for ii in range(self.num_workers)] for _ in range(self._num_total_replicas)]
+        self.workers_rng_state_dict['torch_cuda'] = [[torch_cuda_rng_state for ii in range(self.num_workers)] for _ in range(self._num_total_replicas)]
+        self.workers_rng_state_dict['numpy'] = [[np_rng_state for ii in range(self.num_workers)] for _ in range(self._num_total_replicas)]
+        self.workers_rng_state_dict['random'] = [[rd_rng_state for ii in range(self.num_workers)] for _ in range(self._num_total_replicas)]
+        self.workers_rng_state_dict['valid_from'] = self._start_rank
+        self.workers_rng_state_dict['valid_length'] = self._num_required_replicas
+        
+        self.workers_rng_state_dict['init_flag'] = [[False for ii in range(self.num_workers)] for _ in range(self._num_total_replicas)]
+        self.workers_rng_state_dict['set_cnt'] = [[0 for ii in range(self.num_workers)] for _ in range(self._num_total_replicas)]
+
+    def load_workers_rng_state(self, ckpt):
+        assert self._are_deterministic_dataloader_workers_enabled
+        assert len(ckpt['torch']) == self._num_total_replicas and len(ckpt['torch'][0]) == self.num_workers
+
+        self.workers_rng_state_dict['valid_from'] = self._start_rank
+        self.workers_rng_state_dict['valid_length'] = self._num_required_replicas
+
+        for idx_0 in range(self._start_rank, self._start_rank + self._num_required_replicas):
+            for idx_1 in range(self.num_workers):
+                self.workers_rng_state_dict["torch"][idx_0][idx_1] = ckpt["torch"][idx_0][idx_1]
+                if torch.cuda.is_available():
+                    self.workers_rng_state_dict["torch_cuda"][idx_0][idx_1] = ckpt["torch_cuda"][idx_0][idx_1]
+                self.workers_rng_state_dict["numpy"][idx_0][idx_1] = ckpt["numpy"][idx_0][idx_1]
+                self.workers_rng_state_dict["random"][idx_0][idx_1] = ckpt["random"][idx_0][idx_1]
+                self.workers_rng_state_dict["init_flag"][idx_0][idx_1] = ckpt["init_flag"][idx_0][idx_1]
+                self.workers_rng_state_dict["set_cnt"][idx_0][idx_1] = ckpt["set_cnt"][idx_0][idx_1]
+
+    def get_workers_rng_state(self):
+        assert self._are_deterministic_dataloader_workers_enabled
+        return self.workers_rng_state_dict
+
     def _get_iterator(self) -> '_BaseDataLoaderIter':
         if self.num_workers == 0:
             return _SingleProcessDataLoaderIter(self)
@@ -352,7 +434,11 @@ class DataLoader(Generic[T_co]):
                 self._iterator._reset(self)
             return self._iterator
         else:
-            return self._get_iterator()
+            if self._are_deterministic_dataloader_workers_enabled:
+                self._iterator = self._get_iterator()
+                return self._iterator
+            else:
+                return self._get_iterator()
 
     @property
     def _auto_collation(self):
@@ -889,6 +975,25 @@ class _MultiProcessingDataLoaderIter(_BaseDataLoaderIter):
         self._shutdown = False
         self._workers_done_event = multiprocessing_context.Event()
 
+        self._are_deterministic_dataloader_workers_enabled = False
+        if loader._are_deterministic_dataloader_workers_enabled:
+            self._are_deterministic_dataloader_workers_enabled = True
+            self._num_total_replicas = loader._num_total_replicas
+            self._num_required_replicas = loader._num_required_replicas
+            self._start_rank = loader._start_rank
+            self._deterministic_sampler = loader.sampler
+            
+            self.rng_state_dict = loader.workers_rng_state_dict
+            
+            self._start_batch_idx = loader._start_batch_idx
+            self._current_epoch = loader._current_epoch
+            self._current_mini_batch = loader._current_mini_batch
+            self._prev_finished_epoch = loader._current_epoch
+            self._prev_finished_mini_batch = loader._current_mini_batch
+
+            self._buffer_unmatched_index = dict()
+            self._buffer_unmatched_rng_state = dict()
+
         self._index_queues = []
         self._workers = []
         for i in range(self._num_workers):
@@ -903,7 +1008,8 @@ class _MultiProcessingDataLoaderIter(_BaseDataLoaderIter):
                       self._worker_result_queue, self._workers_done_event,
                       self._auto_collation, self._collate_fn, self._drop_last,
                       self._base_seed + i, self._worker_init_fn, i, self._num_workers,
-                      self._persistent_workers))
+                      self._persistent_workers,
+                      self._are_deterministic_dataloader_workers_enabled))
             w.daemon = True
             # NB: Process.start() actually take some time as it needs to
             #     start a process and pass the arguments over via a pipe.
@@ -924,7 +1030,8 @@ class _MultiProcessingDataLoaderIter(_BaseDataLoaderIter):
                 target=_utils.pin_memory._pin_memory_loop,
                 args=(self._worker_result_queue, self._data_queue,
                       torch.cuda.current_device(),
-                      self._pin_memory_thread_done_event))
+                      self._pin_memory_thread_done_event,
+                      self._are_deterministic_dataloader_workers_enabled))
             pin_memory_thread.daemon = True
             pin_memory_thread.start()
             # Similar to workers (see comment above), we only register
@@ -938,6 +1045,120 @@ class _MultiProcessingDataLoaderIter(_BaseDataLoaderIter):
         _utils.signal_handling._set_SIGCHLD_handler()
         self._worker_pids_set = True
         self._reset(loader, first_iter=True)
+
+    def _inspect_buffer_unmatched_rng_state(self):
+        # after the forward/backward computation, the corressponding batches must have been loaded.
+        finished_epoch = self._current_epoch
+        finished_mini_batch = self._current_mini_batch
+        if (finished_epoch > self._prev_finished_epoch) or (finished_mini_batch > self._prev_finished_mini_batch):
+            keys = list(self._buffer_unmatched_rng_state.keys())
+            for send_idx in sorted(keys):
+                mini_batch = self._locate_mini_batch(send_idx)
+                if mini_batch <= finished_mini_batch:
+                    self._set_batch_rng_state(send_idx, self._buffer_unmatched_rng_state.pop(send_idx), pass_through=True)
+       
+        # TODO(Mingzhen): for presistent workers?
+        if finished_epoch > self._prev_finished_epoch:
+        #    assert bool(self._buffer_unmatched_index) == False, "keys = {}".format(self._buffer_unmatched_index.keys())
+        #    assert bool(self._buffer_unmatched_rng_state) == False, "keys = {}".format(self._buffer_unmatched_rng_state.keys())
+        #    for idx_0 in range(self._num_total_replicas):
+        #        for idx_1 in range(self._num_workers):
+        #            self.rng_state_dict['set_cnt'][idx_0][idx_1] = 0
+            self._prev_finished_epoch = finished_epoch
+        self._prev_finished_mini_batch = finished_mini_batch
+
+    def _get_current_mini_batch(self):
+        return self._current_mini_batch
+
+    def _locate_micro_batch(self, send_idx):
+        batch_idx = self._start_batch_idx * self._num_total_replicas \
+            + (send_idx // self._num_required_replicas) * self._num_total_replicas \
+            + (send_idx % self._num_required_replicas) + self._start_rank
+        return batch_idx
+
+    def _locate_prev_send_idx(self, send_idx):
+        prev_batch_idx = self._locate_micro_batch(send_idx) - self._num_total_replicas * self._num_workers
+        prev_batch_idx -= self._start_batch_idx * self._num_total_replicas + self._start_rank
+        if prev_batch_idx < 0:
+            return float('inf')
+        div = prev_batch_idx // self._num_total_replicas
+        mod = prev_batch_idx %  self._num_total_replicas
+        prev_send_idx = div * self._num_required_replicas + mod
+        return prev_send_idx
+
+    def _locate_mini_batch(self, send_idx):
+        batch_idx = self._locate_micro_batch(send_idx)
+        mini_batch = batch_idx // self._num_total_replicas
+        return mini_batch
+
+    def _locate_rng_state_indices(self, send_idx, debug=False):
+        batch_idx = self._locate_micro_batch(send_idx)
+        # count the number of processed batches under this rng_state
+        batch_cur_cnt = batch_idx // (self._num_total_replicas * self._num_workers)
+        batch_idx = batch_idx % (self._num_total_replicas * self._num_workers)
+        idx_0 = batch_idx % self._num_total_replicas # which thread
+        idx_1 = batch_idx // self._num_total_replicas # which dataloader worker
+
+        if debug:
+            import sys
+            print("_start_rank={}, _num_required={}".format(self._start_rank, self._num_required_replicas), file=sys.stderr)
+            print("send_idx={}, batch_idx={}, thread={}, dlworker={}, batch_cur_cnt={}, set_cnt={}".format(send_idx, batch_idx, idx_0, idx_1, batch_cur_cnt, self.rng_state_dict['set_cnt']), file=sys.stderr)
+
+        assert (idx_0 >= self._start_rank) \
+            and (idx_0 < self._start_rank + self._num_required_replicas) \
+            and (idx_1 < self._num_workers and idx_1 >= 0)
+
+        return idx_0, idx_1, batch_cur_cnt
+
+    def _get_batch_rng_state(self, send_idx, pass_through=False):
+        idx_0, idx_1, _ = self._locate_rng_state_indices(send_idx)
+
+        if (not pass_through) and self._locate_mini_batch(send_idx) > self._get_current_mini_batch() \
+            and self._locate_prev_send_idx(send_idx) in list(self._buffer_unmatched_rng_state.keys()):
+            state = self._buffer_unmatched_rng_state[self._locate_prev_send_idx(send_idx)]
+
+            if pass_through:
+                assert False, "### DEBUG: Should not come here. send_idx {}, idx ({} {} {}) ,prev {}, set_cnt {}, unmatched {}. CURRENT {}".format(send_idx, idx_0, idx_1, _, self._locate_prev_send_idx(send_idx), self.rng_state_dict['set_cnt'], self._buffer_unmatched_rng_state.keys(), self._get_current_mini_batch())
+        else:
+            state = dict()
+            state['torch'] = self.rng_state_dict['torch'][idx_0][idx_1]
+            if torch.cuda.is_available():
+                state['torch_cuda'] = self.rng_state_dict['torch_cuda'][idx_0][idx_1]
+            state['numpy'] = self.rng_state_dict['numpy'][idx_0][idx_1]
+            state['random'] = self.rng_state_dict['random'][idx_0][idx_1]
+            state['init_flag'] = self.rng_state_dict['init_flag'][idx_0][idx_1]
+            state['idx_0'] = idx_0
+            state['idx_1'] = idx_1
+
+            assert _ == self.rng_state_dict['set_cnt'][idx_0][idx_1], "### DEBUG: idx_0 {}, idx_1 {}, _ {}, set_cnt {}".format(idx_0, idx_1, _, self.rng_state_dict['set_cnt'][idx_0][idx_1])
+        
+        return state
+
+    def _set_batch_rng_state(self, send_idx, state, pass_through=False):
+        idx_0, idx_1, cur_cnt = self._locate_rng_state_indices(send_idx)
+
+        #assert idx_0 == state['idx_0']
+        #assert idx_1 == state['idx_1']
+        assert state['torch'] is not None
+        assert state['numpy'] is not None
+        assert state['random'] is not None
+        assert state['init_flag'] == True
+
+        if self.rng_state_dict['torch'][idx_0][idx_1] is None:
+            assert self.rng_state_dict['set_cnt'][idx_0][idx_1] == 0
+        else:
+            assert self.rng_state_dict['set_cnt'][idx_0][idx_1] == cur_cnt, "### DEBUG: send_idx={}, idx_0={}, idx_1={}, rng_state_dict={}, _={}, {}".format(send_idx, idx_0, idx_1, self.rng_state_dict['set_cnt'][idx_0][idx_1], cur_cnt, self.rng_state_dict['set_cnt'])
+
+        if (not pass_through) and self._locate_mini_batch(send_idx) > self._get_current_mini_batch():
+            self._buffer_unmatched_rng_state[send_idx] = state
+        else:
+            self.rng_state_dict['torch'][idx_0][idx_1] = state['torch']
+            if torch.cuda.is_available():
+                self.rng_state_dict['torch_cuda'][idx_0][idx_1] = state['torch_cuda']
+            self.rng_state_dict['numpy'][idx_0][idx_1] = state['numpy']
+            self.rng_state_dict['random'][idx_0][idx_1] = state['random']
+            self.rng_state_dict['init_flag'][idx_0][idx_1] = state['init_flag']
+            self.rng_state_dict['set_cnt'][idx_0][idx_1] += 1
 
     def _reset(self, loader, first_iter=False):
         super()._reset(loader, first_iter)
@@ -966,6 +1187,12 @@ class _MultiProcessingDataLoaderIter(_BaseDataLoaderIter):
                 if isinstance(return_idx, _utils.worker._ResumeIteration):
                     assert return_data is None
                     resume_iteration_cnt -= 1
+
+            # # TODO(Mingzhen): for presistent workers?
+            # if self._are_deterministic_dataloader_workers_enabled:
+            #     for idx_0 in range(self._num_total_replicas):
+            #         for idx_1 in range(self._num_workers):
+            #             self.rng_state_dict['set_cnt'][idx_0][idx_1] = 0
         # prime the prefetch loop
         for _ in range(self._prefetch_factor * self._num_workers):
             self._try_put_index()
@@ -1179,7 +1406,12 @@ class _MultiProcessingDataLoaderIter(_BaseDataLoaderIter):
                 return self._process_data(data)
 
             assert not self._shutdown and self._tasks_outstanding > 0
-            idx, data = self._get_data()
+            if self._are_deterministic_dataloader_workers_enabled:
+                idx, batch_rng_state, data = self._get_data()
+                self._set_batch_rng_state(idx, batch_rng_state)
+                del batch_rng_state
+            else:
+                idx, data = self._get_data()
             self._tasks_outstanding -= 1
             if self._dataset_kind == _DatasetKind.Iterable:
                 # Check for _IterableDatasetStopIteration
@@ -1201,6 +1433,9 @@ class _MultiProcessingDataLoaderIter(_BaseDataLoaderIter):
     def _try_put_index(self):
         assert self._tasks_outstanding < self._prefetch_factor * self._num_workers
 
+        if self._are_deterministic_dataloader_workers_enabled:
+            self._try_put_index_from_buffer_unmatched()
+
         try:
             index = self._next_index()
         except StopIteration:
@@ -1213,10 +1448,34 @@ class _MultiProcessingDataLoaderIter(_BaseDataLoaderIter):
             # not found (i.e., didn't break)
             return
 
-        self._index_queues[worker_queue_idx].put((self._send_idx, index))
+        if self._are_deterministic_dataloader_workers_enabled:
+            idx_0, idx_1, cur_cnt = self._locate_rng_state_indices(self._send_idx, debug=False)
+            assert cur_cnt >= self.rng_state_dict['set_cnt'][idx_0][idx_1], "_send_idx=%d, idx_0=%d, idx_1=%d, cur_cnt=%d, rng_state_dict=%d" %(self._send_idx, idx_0, idx_1, cur_cnt, self.rng_state_dict['set_cnt'][idx_0][idx_1]) + ", {}".format(self.rng_state_dict['set_cnt'])
+            if cur_cnt > self.rng_state_dict['set_cnt'][idx_0][idx_1]:
+                self._buffer_unmatched_index[self._send_idx] = (worker_queue_idx, index)
+                self._tasks_outstanding += 1
+                self._send_idx += 1
+                return
+            else:
+                batch_rng_state = self._get_batch_rng_state(self._send_idx)
+                self._index_queues[worker_queue_idx].put((self._send_idx, batch_rng_state, index))
+        else:
+            self._index_queues[worker_queue_idx].put((self._send_idx, index))
         self._task_info[self._send_idx] = (worker_queue_idx,)
         self._tasks_outstanding += 1
         self._send_idx += 1
+
+    def _try_put_index_from_buffer_unmatched(self):
+        assert self._are_deterministic_dataloader_workers_enabled
+
+        for _send_idx in list(self._buffer_unmatched_index.keys()):
+            idx_0, idx_1, cur_cnt = self._locate_rng_state_indices(_send_idx)
+            assert cur_cnt >= self.rng_state_dict['set_cnt'][idx_0][idx_1]
+            if cur_cnt == self.rng_state_dict['set_cnt'][idx_0][idx_1]:
+                worker_queue_idx, index = self._buffer_unmatched_index.pop(_send_idx)
+                batch_rng_state = self._get_batch_rng_state(_send_idx, pass_through=True)
+                self._index_queues[worker_queue_idx].put((_send_idx, batch_rng_state, index))
+                self._task_info[_send_idx] = (worker_queue_idx,)
 
     def _process_data(self, data):
         self._rcvd_idx += 1
@@ -1275,7 +1534,10 @@ class _MultiProcessingDataLoaderIter(_BaseDataLoaderIter):
                     self._pin_memory_thread_done_event.set()
                     # Send something to pin_memory_thread in case it is waiting
                     # so that it can wake up and check `pin_memory_thread_done_event`
-                    self._worker_result_queue.put((None, None))
+                    if self._are_deterministic_dataloader_workers_enabled:
+                        self._worker_result_queue.put((None, None, None))
+                    else:
+                        self._worker_result_queue.put((None, None))
                     self._pin_memory_thread.join()
                     self._worker_result_queue.cancel_join_thread()
                     self._worker_result_queue.close()

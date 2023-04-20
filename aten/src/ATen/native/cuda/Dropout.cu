@@ -335,10 +335,20 @@ fused_dropout_cuda(const Tensor& self, double p, c10::optional<Generator> gen_){
 //empty tensors should not get here, but just in case, avoid FPE
   if (nelem==0) return std::tuple<Tensor,Tensor>(self, mask);
   const int64_t block_size = 256;
-  unsigned int blocks_per_sm = at::cuda::getCurrentDeviceProperties()->maxThreadsPerMultiProcessor/block_size;
+
+  //unsigned int maxThreadsPerMultiProcessor = at::cuda::getCurrentDeviceProperties()->maxThreadsPerMultiProcessor;
+  //unsigned int multiProcessorCount = at::cuda::getCurrentDeviceProperties()->multiProcessorCount;
+  //if (at::globalContext().heterogeneousDeterministicAlgorithms()) {
+  //  maxThreadsPerMultiProcessor = 1024;
+  //  multiProcessorCount = 40;
+  //}
+
+  //unsigned int blocks_per_sm = at::cuda::getCurrentDeviceProperties()->maxThreadsPerMultiProcessor/block_size;
+  unsigned int blocks_per_sm = 1024/block_size;
   dim3 dim_block(block_size);
   dim3 grid((nelem + block_size -1)/block_size);
-  grid.x = std::min((unsigned int)at::cuda::getCurrentDeviceProperties()->multiProcessorCount * blocks_per_sm, grid.x);
+  //grid.x = std::min((unsigned int)at::cuda::getCurrentDeviceProperties()->multiProcessorCount * blocks_per_sm, grid.x);
+  grid.x = std::min((unsigned int)40 * blocks_per_sm, grid.x);
 //number of times random will be generated per thread, to offset philox counter in thc random state
   int64_t counter_offset = ((nelem - 1)/(block_size*grid.x*UNROLL)+1)*UNROLL;
   PhiloxCudaState rng_engine_inputs;

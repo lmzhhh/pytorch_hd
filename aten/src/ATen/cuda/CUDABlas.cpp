@@ -25,6 +25,63 @@
 
 namespace {
 
+static cublasGemmAlgo_t HACK_GET_GEMM_ALGO(int x) {
+  switch (x) {
+    case -1:
+      return CUBLAS_GEMM_DEFAULT;
+    case 0:
+      return CUBLAS_GEMM_ALGO0;
+    case 1:
+      return CUBLAS_GEMM_ALGO1;
+    case 2:
+      return CUBLAS_GEMM_ALGO2;
+    case 3:
+      return CUBLAS_GEMM_ALGO3;
+    case 4:
+      return CUBLAS_GEMM_ALGO4;
+    case 5:
+      return CUBLAS_GEMM_ALGO5;
+    case 6:
+      return CUBLAS_GEMM_ALGO6;
+    case 7:
+      return CUBLAS_GEMM_ALGO7;
+    case 8:
+      return CUBLAS_GEMM_ALGO8;
+    case 9:
+      return CUBLAS_GEMM_ALGO9;
+    case 10:
+      return CUBLAS_GEMM_ALGO10;
+    case 11:
+      return CUBLAS_GEMM_ALGO11;
+    case 12:
+      return CUBLAS_GEMM_ALGO12;
+    case 13:
+      return CUBLAS_GEMM_ALGO13;
+    case 14:
+      return CUBLAS_GEMM_ALGO14;
+    case 15:
+      return CUBLAS_GEMM_ALGO15;
+    case 16:
+      return CUBLAS_GEMM_ALGO16;
+    case 17:
+      return CUBLAS_GEMM_ALGO17;
+    case 18:
+      return CUBLAS_GEMM_ALGO18;
+    case 19:
+      return CUBLAS_GEMM_ALGO19;
+    case 20:
+      return CUBLAS_GEMM_ALGO20;
+    case 21:
+      return CUBLAS_GEMM_ALGO21;
+    case 22:
+      return CUBLAS_GEMM_ALGO22;
+    case 23:
+      return CUBLAS_GEMM_ALGO23;
+  }
+  AT_ERROR(
+      "HACK_GET_GEMM_ALGO input got `", x, "`");
+}
+
 static cublasOperation_t _cublasOpFromChar(char op) {
   switch (op) {
     case 'n':
@@ -356,8 +413,24 @@ void gemm<double>(CUDABLAS_GEMM_ARGTYPES(double)) {
   cublasOperation_t opb = _cublasOpFromChar(transb);
   _cublasAdjustLdLevel3(transa, transb, m, n, k, &lda, &ldb, &ldc);
   GEMM_CHECK_ARGVALUES(double);
-  TORCH_CUDABLAS_CHECK(cublasDgemm(
-      handle, opa, opb, m, n, k, &alpha, a, lda, b, ldb, &beta, c, ldc));
+  
+  if (! at::globalContext().heterogeneousDeterministicAlgorithms()) {
+    TORCH_CUDABLAS_CHECK(cublasDgemm(
+        handle, opa, opb, m, n, k, &alpha, a, lda, b, ldb, &beta, c, ldc));
+  }
+  else {
+
+    int algo = at::globalContext().gemmAlgo();
+
+    if(algo <= 23) {
+      TORCH_CUDABLAS_CHECK(cublasGemmEx(
+          handle, opa, opb, m, n, k, &alpha, a, CUDA_R_64F, lda, b, CUDA_R_64F, ldb, &beta, c, CUDA_R_64F, ldc, CUDA_R_64F, HACK_GET_GEMM_ALGO(algo) ));
+    }
+    if(algo == 24) {
+      TORCH_CUDABLAS_CHECK(cublasDgemm(
+          handle, opa, opb, m, n, k, &alpha, a, lda, b, ldb, &beta, c, ldc));
+    }
+  }
 }
 
 template <>
@@ -369,8 +442,24 @@ void gemm<float>(CUDABLAS_GEMM_ARGTYPES(float)) {
   cublasOperation_t opb = _cublasOpFromChar(transb);
   _cublasAdjustLdLevel3(transa, transb, m, n, k, &lda, &ldb, &ldc);
   GEMM_CHECK_ARGVALUES(float);
-  TORCH_CUDABLAS_CHECK(cublasSgemm(
-      handle, opa, opb, m, n, k, &alpha, a, lda, b, ldb, &beta, c, ldc));
+
+  if (! at::globalContext().heterogeneousDeterministicAlgorithms()) {
+    TORCH_CUDABLAS_CHECK(cublasSgemm(
+        handle, opa, opb, m, n, k, &alpha, a, lda, b, ldb, &beta, c, ldc));
+  }
+  else {
+
+    int algo = at::globalContext().gemmAlgo();
+
+    if(algo <= 23) {
+      TORCH_CUDABLAS_CHECK(cublasGemmEx(
+          handle, opa, opb, m, n, k, &alpha, a, CUDA_R_32F, lda, b, CUDA_R_32F, ldb, &beta, c, CUDA_R_32F, ldc, CUDA_R_32F, HACK_GET_GEMM_ALGO(algo) ));
+    }
+    if(algo == 24) {
+      TORCH_CUDABLAS_CHECK(cublasSgemm(
+          handle, opa, opb, m, n, k, &alpha, a, lda, b, ldb, &beta, c, ldc));
+    }
+  }
 }
 
 #if !defined(__HIP_PLATFORM_HCC__) || (defined(__HIP_PLATFORM_HCC__) && HIP_VERSION >= 210)
@@ -620,14 +709,27 @@ void gemv<c10::complex<float>>(CUDABLAS_GEMV_ARGTYPES(c10::complex<float>)) {
 
 template <>
 void gemv<double>(CUDABLAS_GEMV_ARGTYPES(double)) {
-  // See Note [Writing Nondeterministic Operations]
-  globalContext().alertCuBLASConfigNotDeterministic();
-  cublasHandle_t handle = at::cuda::getCurrentCUDABlasHandle();
-  cublasOperation_t op = _cublasOpFromChar(trans);
-  _cublasAdjustLdLevel2(m, n, &lda);
-  GEMV_CHECK_ARGVALUES(double);
-  TORCH_CUDABLAS_CHECK(
-      cublasDgemv(handle, op, m, n, &alpha, a, lda, x, incx, &beta, y, incy));
+  if (! at::globalContext().heterogeneousDeterministicAlgorithms()) {
+    // See Note [Writing Nondeterministic Operations]
+    globalContext().alertCuBLASConfigNotDeterministic();
+    cublasHandle_t handle = at::cuda::getCurrentCUDABlasHandle();
+    cublasOperation_t op = _cublasOpFromChar(trans);
+    _cublasAdjustLdLevel2(m, n, &lda);
+    GEMV_CHECK_ARGVALUES(double);
+    TORCH_CUDABLAS_CHECK(
+        cublasDgemv(handle, op, m, n, &alpha, a, lda, x, incx, &beta, y, incy));
+  }
+  else {
+    bool trans_bool = (_cublasOpFromChar(trans) != CUBLAS_OP_N);
+    if (trans_bool) {
+      std::swap(m, n);
+    }
+    char trans_flipped = (trans_bool ? 'n' : 't');
+    gemm<double>(
+        'n', trans_flipped, 1, m, n, alpha, x, incx, a, lda, beta, y, incy);
+  }
+
+
 }
 
 template <>
@@ -635,14 +737,27 @@ void gemv<float>(CUDABLAS_GEMV_ARGTYPES(float)) {
   // gemv is bw bound, and does not benefit from TF32. But the precision
   // loss still happens on TF32. So we disable it here.
   NoTF32Guard disable_tf32;
-  // See Note [Writing Nondeterministic Operations]
-  globalContext().alertCuBLASConfigNotDeterministic();
-  cublasHandle_t handle = at::cuda::getCurrentCUDABlasHandle();
-  cublasOperation_t op = _cublasOpFromChar(trans);
-  _cublasAdjustLdLevel2(m, n, &lda);
-  GEMV_CHECK_ARGVALUES(float);
-  TORCH_CUDABLAS_CHECK(
-      cublasSgemv(handle, op, m, n, &alpha, a, lda, x, incx, &beta, y, incy));
+
+  if (! at::globalContext().heterogeneousDeterministicAlgorithms()) {
+    // See Note [Writing Nondeterministic Operations]
+    globalContext().alertCuBLASConfigNotDeterministic();
+    cublasHandle_t handle = at::cuda::getCurrentCUDABlasHandle();
+    cublasOperation_t op = _cublasOpFromChar(trans);
+    _cublasAdjustLdLevel2(m, n, &lda);
+    GEMV_CHECK_ARGVALUES(float);
+    TORCH_CUDABLAS_CHECK(
+        cublasSgemv(handle, op, m, n, &alpha, a, lda, x, incx, &beta, y, incy));
+  }
+  else {
+    bool trans_bool = (_cublasOpFromChar(trans) != CUBLAS_OP_N);
+    if (trans_bool) {
+      std::swap(m, n);
+    }
+    char trans_flipped = (trans_bool ? 'n' : 't');
+    gemm<float>(
+        'n', trans_flipped, 1, m, n, alpha, x, incx, a, lda, beta, y, incy);
+  }
+
 }
 
 template <>

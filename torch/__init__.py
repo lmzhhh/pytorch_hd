@@ -439,6 +439,43 @@ def is_deterministic():
         "release. Please use torch.are_deterministic_algorithms_enabled instead"))
     return are_deterministic_algorithms_enabled()
 
+def use_heterogeneous_deterministic_algorithms(d):
+    r""" Sets whether PyTorch operations must use "heterogeneous deterministic"
+    algorithms. That is, algorithms which, given the same input, and when
+    run on the same software and hardware, always produce the same output.
+    When True, operations will use heterogeneous deterministic algorithms when available,
+    and if only nondeterministic algorithms are available they will throw a
+    :class:RuntimeError when called.
+
+    .. warning::
+        This feature is in beta, and its design and implementation may change
+        in the future.
+
+    The following normally-nondeterministic operations will act
+    deterministically when `d=True`: 
+    
+    dropout, gemm, conv, lstm, batch_norm
+    """
+    _C._set_heterogeneous_deterministic_algorithms(d)
+
+def are_heterogeneous_deterministic_algorithms_enabled():
+    r"""Returns True if the global heterogeneous deterministic flag is turned on. Refer to
+    :func:`torch.use_heterogeneous_deterministic_algorithms` documentation for more details.
+    """
+    return _C._get_heterogeneous_deterministic_algorithms()
+
+# hack
+def set_gemm_algo(d):
+    _C._set_gemm_algo(d)
+
+def get_gemm_algo():
+    return _C._get_gemm_algo()
+
+def use_deterministic_dataloader_workers(d):
+    _C._set_deterministic_dataloader_workers(d)
+
+def are_deterministic_dataloader_workers_enabled():
+    return _C._get_deterministic_dataloader_workers()
 
 ################################################################################
 # Define Storage and Tensor classes

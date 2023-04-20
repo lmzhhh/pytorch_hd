@@ -11,7 +11,7 @@ from . import MP_STATUS_CHECK_INTERVAL
 from torch._utils import ExceptionWrapper
 
 
-def _pin_memory_loop(in_queue, out_queue, device_id, done_event):
+def _pin_memory_loop(in_queue, out_queue, device_id, done_event, is_deterministic):
     # This setting is thread local, and prevents the copy in pin_memory from
     # consuming all CPU cores.
     torch.set_num_threads(1)
@@ -25,14 +25,20 @@ def _pin_memory_loop(in_queue, out_queue, device_id, done_event):
             r = in_queue.get(timeout=MP_STATUS_CHECK_INTERVAL)
         except queue.Empty:
             continue
-        idx, data = r
+        if is_deterministic:
+            idx, batch_rng_state, data = r
+        else:
+            idx, data = r
         if not done_event.is_set() and not isinstance(data, ExceptionWrapper):
             try:
                 data = pin_memory(data)
             except Exception:
                 data = ExceptionWrapper(
                     where="in pin memory thread for device {}".format(device_id))
-            r = (idx, data)
+            if is_deterministic:
+                r = (idx, batch_rng_state, data)
+            else:
+                r = (idx, data)
         while not done_event.is_set():
             try:
                 out_queue.put(r, timeout=MP_STATUS_CHECK_INTERVAL)

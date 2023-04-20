@@ -2146,8 +2146,11 @@ def batch_norm(
     if training:
         _verify_batch_size(input.size())
 
+    use_cudnn_bn = False if torch.are_heterogeneous_deterministic_algorithms_enabled() else torch.backends.cudnn.enabled
+
     return torch.batch_norm(
-        input, weight, bias, running_mean, running_var, training, momentum, eps, torch.backends.cudnn.enabled
+        #input, weight, bias, running_mean, running_var, training, momentum, eps, torch.backends.cudnn.enabled
+        input, weight, bias, running_mean, running_var, training, momentum, eps, use_cudnn_bn
     )
 
 

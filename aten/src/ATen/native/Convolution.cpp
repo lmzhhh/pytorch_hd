@@ -631,7 +631,13 @@ at::Tensor _convolution(
   params.groups = groups_;
   params.benchmark = benchmark;
   params.deterministic = deterministic;
-  params.cudnn_enabled = cudnn_enabled;
+
+  if (! at::globalContext().heterogeneousDeterministicAlgorithms()) {
+    params.cudnn_enabled = cudnn_enabled;
+  }
+  else {
+    params.cudnn_enabled = false;
+  }
   params.allow_tf32 = allow_tf32;
 
   check_shape_forward(input, weight_sizes, bias, params);

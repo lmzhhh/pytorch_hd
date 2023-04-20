@@ -473,6 +473,50 @@ PyObject *THPModule_deterministicAlgorithms(PyObject *_unused, PyObject *noargs)
   else Py_RETURN_FALSE;
 }
 
+PyObject *THPModule_setHeterogeneousDeterministicAlgorithms(PyObject *_unused, PyObject *arg)
+{
+  THPUtils_assert(PyBool_Check(arg), "use_heterogeneous_deterministic_algorithms expects a "
+          "bool, but got %s", THPUtils_typename(arg));
+  at::globalContext().setHeterogeneousDeterministicAlgorithms(arg == Py_True);
+  Py_RETURN_NONE;
+}
+
+PyObject *THPModule_heterogeneousDeterministicAlgorithms(PyObject *_unused, PyObject *noargs)
+{
+  if (at::globalContext().heterogeneousDeterministicAlgorithms()) Py_RETURN_TRUE;
+  else Py_RETURN_FALSE;
+}
+
+// hack
+PyObject *THPModule_setGemmAlgo(PyObject *_unused, PyObject *arg)
+{
+
+  THPUtils_assert(THPUtils_checkLong(arg), "set_gemm_algo expects an int, "
+          "but got %s", THPUtils_typename(arg));
+  int algo = (int)THPUtils_unpackLong(arg);
+  at::globalContext().setGemmAlgo(algo);
+  Py_RETURN_NONE;
+}
+
+PyObject *THPModule_gemmAlgo(PyObject *_unused, PyObject *noargs)
+{
+  return THPUtils_packInt32(at::globalContext().gemmAlgo());
+}
+
+PyObject *THPModule_setDeterministicDataloaderWorkers(PyObject *_unused, PyObject *arg)
+{
+  THPUtils_assert(PyBool_Check(arg), "use_deterministic_dataloader_workers expects a "
+          "bool, but got %s", THPUtils_typename(arg));
+  at::globalContext().setDeterministicDataloaderWorkers(arg == Py_True);
+  Py_RETURN_NONE;
+}
+
+PyObject *THPModule_deterministicDataloaderWorkers(PyObject *_unused, PyObject *noargs)
+{
+  if (at::globalContext().deterministicDataloaderWorkers()) Py_RETURN_TRUE;
+  else Py_RETURN_FALSE;
+}
+
 PyObject *THPModule_setBenchmarkCuDNN(PyObject *_unused, PyObject *arg)
 {
   THPUtils_assert(PyBool_Check(arg), "set_benchmark_cudnn expects a bool, "
@@ -634,6 +678,14 @@ static PyMethodDef TorchMethods[] = {
   {"_set_cudnn_deterministic", THPModule_setDeterministicCuDNN, METH_O,  nullptr},
   {"_get_deterministic_algorithms", THPModule_deterministicAlgorithms, METH_NOARGS,     nullptr},
   {"_set_deterministic_algorithms", THPModule_setDeterministicAlgorithms, METH_O,  nullptr},
+  {"_get_heterogeneous_deterministic_algorithms", THPModule_heterogeneousDeterministicAlgorithms, METH_NOARGS,     nullptr},
+  {"_set_heterogeneous_deterministic_algorithms", THPModule_setHeterogeneousDeterministicAlgorithms, METH_O,  nullptr},
+  //hack
+  {"_get_gemm_algo", THPModule_gemmAlgo, METH_NOARGS,     nullptr},
+  {"_set_gemm_algo", THPModule_setGemmAlgo, METH_O,  nullptr},
+  {"_get_deterministic_dataloader_workers", THPModule_deterministicDataloaderWorkers, METH_NOARGS,     nullptr},
+  {"_set_deterministic_dataloader_workers", THPModule_setDeterministicDataloaderWorkers, METH_O,  nullptr},
+
   {"_get_cublas_allow_tf32", THPModule_allowTF32CuBLAS, METH_NOARGS,     nullptr},
   {"_set_cublas_allow_tf32", THPModule_setAllowTF32CuBLAS, METH_O,  nullptr},
   {"_vmapmode_increment_nesting", THPModule_vmapmode_increment_nesting, METH_NOARGS, nullptr},

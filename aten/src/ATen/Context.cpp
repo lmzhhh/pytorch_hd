@@ -84,6 +84,45 @@ void Context::alertNotDeterministic(c10::string_view const& caller) {
   }
 }
 
+bool Context::heterogeneousDeterministicAlgorithms() const {
+  return _heterogeneous_deterministic_algorithms;
+}
+
+void Context::setHeterogeneousDeterministicAlgorithms(bool b) {
+  if (b) {
+    TORCH_WARN_ONCE("torch.use_heterogeneous_deterministic_algorithms is in beta, and "
+      " we will find and support more kernels.");
+  }
+  
+  setDeterministicAlgorithms(true);
+  // TODO:: set cudnn and cublas
+  _heterogeneous_deterministic_algorithms = b;
+}
+
+bool Context::deterministicDataloaderWorkers() const {
+  return _deterministic_dataloader_workers;
+}
+
+void Context::setDeterministicDataloaderWorkers(bool b) {
+  if (b) {
+    TORCH_WARN_ONCE("torch.use_deterministic_dataloader_workers is in beta.");
+  }
+  
+  _deterministic_dataloader_workers = b;
+}
+
+// hack
+int Context::gemmAlgo() const {
+  return _gemm_algo;
+}
+
+void Context::setGemmAlgo(int b) {
+  TORCH_WARN_ONCE("torch.setGemmAlgo");
+  
+  _gemm_algo = b;
+}
+
+
 bool Context::allowTF32CuDNN() const {
   return allow_tf32_cudnn;
 }

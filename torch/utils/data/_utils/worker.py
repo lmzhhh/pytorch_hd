@@ -6,6 +6,7 @@ static methods.
 
 import torch
 import random
+import numpy as np
 import os
 from dataclasses import dataclass
 from torch._six import queue
@@ -119,9 +120,42 @@ r"""Dummy class used to resume the fetching when worker reuse is enabled"""
 class _ResumeIteration(object):
     pass
 
+def _init_rng_state():
+    state = dict()
+    state['torch'] = None
+    state['torch_cuda'] = None
+    state['numpy'] = None
+    state['random'] = None
+    state['idx_0'] = None
+    state['idx_1'] = None
+    state['init_flag'] = None
+    return state
+
+def _restore_rng_state(state):
+    torch.set_rng_state(state['torch'])
+    if torch.cuda.is_available():
+        torch.cuda.set_rng_state(state['torch_cuda'])
+    np.random.set_state(state['numpy'])
+    random.setstate(state['random'])
+
+def _record_rng_state(state):
+    state['torch'] = torch.get_rng_state()
+    if torch.cuda.is_available():
+        state['torch_cuda'] = torch.cuda.get_rng_state()
+    state['numpy'] = np.random.get_state()
+    state['random'] = random.getstate()
+    state['init_flag'] = True
+
+def _set_seed(seed):
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+    np.random.seed(seed % 2**32)
+    random.seed(seed)
+
 def _worker_loop(dataset_kind, dataset, index_queue, data_queue, done_event,
                  auto_collation, collate_fn, drop_last, seed, init_fn, worker_id,
-                 num_workers, persistent_workers):
+                 num_workers, persistent_workers, is_deterministic):
     # See NOTE [ Data Loader Multiprocessing Shutdown Logic ] for details on the
     # logic of this function.
 
@@ -136,6 +170,8 @@ def _worker_loop(dataset_kind, dataset, index_queue, data_queue, done_event,
         torch.set_num_threads(1)
         random.seed(seed)
         torch.manual_seed(seed)
+        # TODO(Mingzhen): PR to pytorch in the future
+        np.random.seed(seed % 2**32)
 
         global _worker_info
         _worker_info = WorkerInfo(id=worker_id, num_workers=num_workers,
@@ -192,15 +228,37 @@ def _worker_loop(dataset_kind, dataset, index_queue, data_queue, done_event,
                 # (None) yet. I will keep continuing until get it, and skip the
                 # processing steps.
                 continue
-            idx, index = r
+
+            if is_deterministic:
+                batch_rng_state = _init_rng_state() 
+                ret_rng_state = _init_rng_state() 
+                idx, batch_rng_state, index = r
+            else:
+                idx, index = r
             data: Union[_IterableDatasetStopIteration, ExceptionWrapper]
             if init_exception is not None:
                 data = init_exception
                 init_exception = None
             else:
                 try:
+                    if is_deterministic:
+                        #assert batch_rng_state['init_flag'] is False
+                        #assert batch_rng_state['torch'] is None
+                        #if batch_rng_state['torch'] is None:
+                        if batch_rng_state['init_flag'] == False:
+                            _set_seed(seed - worker_id + batch_rng_state['idx_1'])
+                            _record_rng_state(batch_rng_state)
+                        else:
+                            _restore_rng_state(batch_rng_state)
+                        #del batch_rng_state
+                    
                     data = fetcher.fetch(index)
+
+                    if is_deterministic:
+                        _record_rng_state(ret_rng_state)
                 except Exception as e:
+                    ## TODO(Mingzhen): remove this in CR
+                    assert False and "!!!! Exception: Worker {}".format(worker_id)
                     if isinstance(e, StopIteration) and dataset_kind == _DatasetKind.Iterable:
                         data = _IterableDatasetStopIteration(worker_id)
                         # Set `iteration_end`
@@ -213,7 +271,19 @@ def _worker_loop(dataset_kind, dataset, index_queue, data_queue, done_event,
                         # See NOTE [ Python Traceback Reference Cycle Problem ]
                         data = ExceptionWrapper(
                             where="in DataLoader worker process {}".format(worker_id))
-            data_queue.put((idx, data))
+            if is_deterministic:
+                assert ret_rng_state['torch'] is not None
+                assert ret_rng_state['numpy'] is not None
+                assert ret_rng_state['random'] is not None
+                assert ret_rng_state['init_flag'] == True
+                ret_rng_state['idx_0'] = batch_rng_state['idx_0']
+                ret_rng_state['idx_1'] = batch_rng_state['idx_1']
+                #assert not torch.equal(ret_rng_state['torch'], batch_rng_state['torch'])
+                data_queue.put((idx, ret_rng_state, data))
+                del batch_rng_state
+                del ret_rng_state
+            else:
+                data_queue.put((idx, data))
             del data, idx, index, r  # save memory
     except KeyboardInterrupt:
         # Main process will raise KeyboardInterrupt anyways.

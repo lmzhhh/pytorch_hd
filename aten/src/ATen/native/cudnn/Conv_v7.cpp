@@ -259,6 +259,7 @@ struct algorithm_search<cudnnConvolutionFwdAlgoPerf_t> {
   using algo_t = cudnnConvolutionFwdAlgo_t;
 
   static constexpr auto DEFAULT_ALGO = CUDNN_CONVOLUTION_FWD_ALGO_IMPLICIT_PRECOMP_GEMM;
+  //static constexpr auto DEFAULT_ALGO = CUDNN_CONVOLUTION_FWD_ALGO_IMPLICIT_GEMM;
   static BenchmarkCache<perf_t>& cache() { return fwd_algos; }
 
   static std::vector<perf_t> findAlgorithms(const ConvolutionArgs& args, bool benchmark) {

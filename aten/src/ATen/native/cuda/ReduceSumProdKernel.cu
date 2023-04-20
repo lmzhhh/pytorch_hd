@@ -10,28 +10,44 @@ namespace at { namespace native {
 template <typename scalar_t, typename acc_t = scalar_t, typename out_t = scalar_t>
 struct sum_functor {
   void operator()(TensorIterator& iter) {
-    gpu_reduce_kernel<scalar_t, out_t>(
-        iter, func_wrapper<out_t>([] GPU_LAMBDA(acc_t a, acc_t b) -> acc_t {
-          return a + b;
-        }));
+    if (! at::globalContext().heterogeneousDeterministicAlgorithms())
+      gpu_reduce_kernel<scalar_t, out_t>(
+          iter, func_wrapper<out_t>([] GPU_LAMBDA(acc_t a, acc_t b) -> acc_t {
+            return a + b;
+          }));
+    else
+      gpu_reduce_kernel_heterogeneous_deterministic<scalar_t, out_t>(
+          iter, func_wrapper<out_t>([] GPU_LAMBDA(acc_t a, acc_t b) -> acc_t {
+            return a + b;
+          }));
   }
 };
 
 template <typename scalar_t, typename acc_t = scalar_t, typename out_t = scalar_t>
 struct nansum_functor {
   void operator()(TensorIterator& iter) {
-    gpu_reduce_kernel<scalar_t, out_t>(
-        iter, NanSumOps<acc_t, out_t>{});
+    if (! at::globalContext().heterogeneousDeterministicAlgorithms())
+      gpu_reduce_kernel<scalar_t, out_t>(
+          iter, NanSumOps<acc_t, out_t>{});
+    else:
+      gpu_reduce_kernel_heterogeneous_deterministic<scalar_t, out_t>(
+          iter, NanSumOps<acc_t, out_t>{});
   }
 };
 
 template <typename scalar_t, typename acc_t = scalar_t, typename out_t = scalar_t>
 struct prod_functor {
   void operator()(TensorIterator& iter) {
-    gpu_reduce_kernel<scalar_t, out_t>(
-        iter, func_wrapper<out_t>([] GPU_LAMBDA(acc_t a, acc_t b) -> acc_t {
-          return a * b;
-        }), 1);
+    if (! at::globalContext().heterogeneousDeterministicAlgorithms())
+      gpu_reduce_kernel<scalar_t, out_t>(
+          iter, func_wrapper<out_t>([] GPU_LAMBDA(acc_t a, acc_t b) -> acc_t {
+            return a * b;
+          }), 1);
+    else 
+      gpu_reduce_kernel_heterogeneous_deterministic<scalar_t, out_t>(
+          iter, func_wrapper<out_t>([] GPU_LAMBDA(acc_t a, acc_t b) -> acc_t {
+            return a * b;
+          }), 1);
   }
 };
 
@@ -39,10 +55,16 @@ struct prod_functor {
 template <>
 struct prod_functor<bool> {
   void operator()(TensorIterator& iter) {
-    gpu_reduce_kernel<bool, bool>(
-        iter, func_wrapper<bool>([] GPU_LAMBDA(bool a, bool b) -> bool {
-          return a && b;
-        }), 1);
+    if (! at::globalContext().heterogeneousDeterministicAlgorithms())
+      gpu_reduce_kernel<bool, bool>(
+          iter, func_wrapper<bool>([] GPU_LAMBDA(bool a, bool b) -> bool {
+            return a && b;
+          }), 1);
+    else
+      gpu_reduce_kernel_heterogeneous_deterministic<bool, bool>(
+          iter, func_wrapper<bool>([] GPU_LAMBDA(bool a, bool b) -> bool {
+            return a && b;
+          }), 1);
   }
 };
 
