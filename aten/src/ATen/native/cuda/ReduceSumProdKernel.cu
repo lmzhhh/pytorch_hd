@@ -29,7 +29,7 @@ struct nansum_functor {
     if (! at::globalContext().heterogeneousDeterministicAlgorithms())
       gpu_reduce_kernel<scalar_t, out_t>(
           iter, NanSumOps<acc_t, out_t>{});
-    else:
+    else
       gpu_reduce_kernel_heterogeneous_deterministic<scalar_t, out_t>(
           iter, NanSumOps<acc_t, out_t>{});
   }
